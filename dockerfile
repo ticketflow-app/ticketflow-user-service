@@ -1,7 +1,7 @@
-FROM eclipse-temurin:21-jdk-jammy AS builder
+FROM maven:3.9-eclipse-temurin-21 AS builder
 WORKDIR /build
 COPY . .
-RUN chmod +x mvnw && ./mvnw clean package -DskipTests -Djacoco.skip=true
+RUN mvn clean package -DskipTests -Djacoco.skip=true
 
 FROM eclipse-temurin:21-jre-jammy
 WORKDIR /app
