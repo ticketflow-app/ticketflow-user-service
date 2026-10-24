@@ -62,9 +62,9 @@ docker compose up -d postgres
 docker compose up -d --build
 ```
 
-- API: http://localhost:8080
-- Swagger UI: http://localhost:8080/swagger-ui.html
-- Actuator health: http://localhost:8080/actuator/health
+- API: http://localhost:8081
+- Swagger UI: http://localhost:8081/swagger-ui.html
+- Actuator health: http://localhost:8081/actuator/health
 
 ### Tests
 

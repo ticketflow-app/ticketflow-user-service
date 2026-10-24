@@ -1,10 +1,10 @@
 package com.ticketflow.user.user.infrastructure.adapter.in.controller;
 
 import com.ticketflow.user.common.application.dto.ApiResponse;
-import com.ticketflow.user.user.application.ports.in.service.ChangeRolePort;
-import com.ticketflow.user.user.application.ports.in.service.GetMePort;
 import com.ticketflow.user.user.application.ports.in.dto.ChangeRoleRequestDTO;
 import com.ticketflow.user.user.application.ports.in.dto.GetUserResponseDTO;
+import com.ticketflow.user.user.application.ports.in.service.ChangeRolePort;
+import com.ticketflow.user.user.application.ports.in.service.GetMePort;
 import com.ticketflow.user.user.domain.models.enums.UserRole;
 import com.ticketflow.user.user.infrastructure.security.JwtAuthenticationFilter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -15,11 +15,13 @@ import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
 
 @RestController
+@RequestMapping("/api/usuarios")
 @RequiredArgsConstructor
 @Tag(name = "User", description = "Endpoints for authenticated user information and administration")
 public class UserController {
@@ -36,7 +38,7 @@ public class UserController {
                 .ok(ApiResponse.success(user, "User information retrieved successfully"));
     }
 
-    @PatchMapping("/users/{id}/rol")
+    @PatchMapping("/{id}/rol")
     public ResponseEntity<ApiResponse<Void>> changeRole(
             @PathVariable UUID id,
             @RequestBody ChangeRoleRequestDTO request,

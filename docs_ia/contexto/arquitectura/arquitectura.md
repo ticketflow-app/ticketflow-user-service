@@ -1,811 +1,434 @@
-# Documentación de arquitectura
+# Arquitectura — ticketflow-user-service
 
-## Plataforma de venta de boletos para eventos de alta demanda
+Microservicio de **usuarios, autenticación y roles** de TicketFlow. Emite el JWT que valida el
+API Gateway.
 
-**Fase 1 — Microservicios: Usuarios, Catálogo y búsqueda, Inventario**
-
----
-
-# 1. Visión general
-
-Esta fase inicial del sistema cubre tres microservicios base:
-
-- Usuarios
-- Catálogo y búsqueda
-- Inventario
-
-Estos servicios constituyen la base sobre la cual podrán construirse funcionalidades adicionales en fases posteriores, como notificaciones, check-in y analítica.
-
-Los tres microservicios comparten un entorno de ejecución basado en contenedores y se comunican mediante APIs. El acceso externo al sistema se centraliza mediante un API Gateway, responsable del enrutamiento de las solicitudes hacia los servicios correspondientes.
-
-El diseño separa deliberadamente las responsabilidades según el comportamiento de los datos:
-
-- **Usuarios** administra identidad, autenticación y roles.
-- **Catálogo y búsqueda** administra la información estática de los eventos y sus secciones.
-- **Inventario** administra la disponibilidad de boletos y las reservas, siendo el componente que requiere mayor consistencia y control de concurrencia.
-
-Catálogo utiliza PostgreSQL como almacenamiento persistente y Redis como caché de lectura. Inventario utiliza Redis para mantener los contadores de disponibilidad y realizar operaciones atómicas, mientras PostgreSQL conserva el registro histórico y auditable de las reservas.
-
-El objetivo principal de esta arquitectura es permitir evaluar el comportamiento del sistema ante escenarios de alta concurrencia, especialmente cuando una gran cantidad de usuarios intenta reservar boletos simultáneamente para un evento de alta demanda.
+> **Alcance de este documento:** describe **exclusivamente la arquitectura de este servicio**.
+> La arquitectura de los demás microservicios de la plataforma (API Gateway, Eureka, Inventario,
+> Catálogo, Check-in, Notificaciones, Reseñas, Analítica) está en el repositorio que le
+> corresponde a cada uno; aquí solo se mencionan las **dependencias externas** en los puntos
+> donde el contrato entre servicios es relevante.
+>
+> **Fuente de verdad del contrato HTTP:** `docs_ia/contexto/contrato_api.md`.
+> **Contexto de negocio, requisitos y calidad:** `docs_ia/contexto/`.
 
 ---
 
-# 2. Objetivos arquitectónicos
+## 1. Propósito y alcance
 
-La arquitectura busca cumplir los siguientes objetivos:
-
-- Separar las responsabilidades del sistema mediante microservicios.
-- Permitir escalar independientemente los servicios que reciban mayor carga.
-- Mantener una alta disponibilidad durante incrementos repentinos de tráfico.
-- Reducir la latencia en operaciones de lectura frecuentes.
-- Evitar la sobreventa de boletos mediante control de concurrencia.
-- Mantener una fuente de verdad clara para la disponibilidad.
-- Aislar la lógica de negocio de las tecnologías de infraestructura.
-- Facilitar las pruebas unitarias y de carga.
-- Permitir incorporar nuevas funcionalidades sin modificar innecesariamente los servicios existentes.
-- Proporcionar observabilidad suficiente para analizar el comportamiento del sistema bajo carga.
-
----
-
-# 3. Estilo arquitectónico
-
-La arquitectura general utiliza una combinación de:
-
-- Arquitectura de microservicios.
-- Arquitectura hexagonal dentro de cada microservicio.
-- Comunicación REST síncrona.
-- Comunicación asíncrona mediante eventos para funcionalidades que lo requieran.
-- Redis para caché y operaciones atómicas.
-- PostgreSQL para almacenamiento persistente.
-- Docker para contenerización.
-- API Gateway para enrutamiento y control de acceso.
-- JWT para autenticación distribuida.
-
-Cada microservicio posee una responsabilidad de negocio claramente delimitada y es responsable de sus propios datos.
-
-Ningún microservicio debe modificar directamente las tablas pertenecientes a otro microservicio. La comunicación entre servicios se realiza mediante APIs o eventos.
-
----
-
-# 4. Stack tecnológico
-
-| Componente | Tecnología | Justificación |
-| --- | --- | --- |
-| Lenguaje / framework | Java + Spring Boot | Ecosistema maduro para desarrollo de microservicios y disponibilidad de herramientas para seguridad, persistencia y comunicación |
-| Estilo arquitectónico interno | Arquitectura hexagonal | Aísla el dominio de Spring, JPA, Redis y otras tecnologías de infraestructura |
-| Base de datos relacional | PostgreSQL | Proporciona persistencia y consistencia transaccional |
-| Caché y contadores atómicos | Redis | Permite operaciones rápidas y atómicas para caché y control de disponibilidad |
-| Mensajería asíncrona | Apache Kafka | Permite publicar eventos que pueden ser consumidos independientemente por diferentes componentes |
-| Autenticación | JWT + Spring Security | Permite validar la identidad y los roles sin consultar al servicio de Usuarios en cada petición |
-| API Gateway | Spring Cloud Gateway | Centraliza el enrutamiento y puede incorporar mecanismos como rate limiting |
-| CDN y DNS | Cloudflare | Permite distribuir contenido estático y gestionar DNS |
-| Contenedores | Docker + Docker Compose | Facilita la ejecución reproducible del sistema en desarrollo y pruebas |
-| Persistencia en nube | Amazon RDS PostgreSQL | Servicio administrado para las bases de datos |
-| Redis en nube | Amazon ElastiCache | Servicio administrado para Redis |
-| Cómputo en nube | Amazon ECS Fargate | Permite ejecutar contenedores sin administrar directamente servidores |
-| Balanceo | Application Load Balancer | Distribuye el tráfico entre las instancias de los servicios |
-| Almacenamiento de archivos | Amazon S3 | Permite almacenar contenido estático |
-| Gestión de secretos | AWS Systems Manager Parameter Store | Centraliza configuraciones sensibles |
-| CI/CD | GitHub Actions + Amazon ECR + ECS | Automatiza construcción, almacenamiento y despliegue de contenedores |
-
-## 4.1 Orquestador
-
-Para desarrollo y pruebas se utilizará Docker Compose.
-
-El uso de un orquestador de mayor complejidad, como Kubernetes, no forma parte de la primera fase debido al alcance del proyecto y al tamaño del equipo.
-
-En el despliegue en AWS se utilizará Amazon ECS Fargate para administrar la ejecución de los contenedores.
-
----
-
-# 5. Microservicios
-
-La primera fase está compuesta por tres microservicios:
-
-## 5.1 Usuarios
-
-Responsable de:
+El servicio administra la identidad y la autenticación de los actores de la plataforma:
 
 - Registro de usuarios.
-- Inicio de sesión.
-- Autenticación.
+- Inicio de sesión y emisión de tokens.
+- Consulta del perfil del usuario autenticado.
 - Gestión de roles.
-- Consulta del perfil.
 
-## 5.2 Catálogo y búsqueda
+Sus consumidores son:
 
-Responsable de:
+| Consumidor | Qué consume |
+|---|---|
+| API Gateway | Valida el JWT emitido por este servicio en cada petición (secreto HS256 compartido). |
+| Frontend (vía BFF del gateway) | `POST /register`, `POST /login`, `GET /me`, `PATCH /users/{id}/rol`. |
 
-- Creación de eventos.
-- Modificación de eventos.
-- Consulta de eventos.
-- Búsqueda y filtrado.
-- Consulta de información de las secciones.
-- Administración de precios y capacidades configuradas.
+**Fuera de alcance** (no pertenece a este servicio): catálogo de eventos, disponibilidad y
+reservas, emisión de boletos, check-in, notificaciones, reseñas y analítica.
 
-Este servicio contiene información estática del evento.
+## 2. Responsabilidad y límites
 
-La disponibilidad en tiempo real de los boletos pertenece al microservicio de Inventario.
+- Es el **dueño único** de los datos de usuario: ninguna otra tabla de la plataforma lo modifica.
+- Es la **única autoridad de roles**: el token que emite es la fuente de verdad de los permisos.
+- **No** consume datos de otros servicios: es autónomo en cuanto a datos.
+- **No** expone endpoints de lectura masiva ni paginación de usuarios (no están en el contrato).
+- No emite eventos de dominio: la especificación de plataforma contempla el topic
+  `usuarios.registrados`, pero **este servicio no usa Kafka** (ver §12).
 
-## 5.3 Inventario
+## 3. Objetivos arquitectónicos
 
-Responsable de:
+- Aislar las reglas de negocio de la infraestructura (Spring, JPA, HTTP, hashing).
+- Emitir un token verificable **sin consultar a este servicio** en cada petición, para no ser un
+  cuello de botella ni un punto único de falla en el camino crítico.
+- Mantener la trazabilidad de las operaciones sensible (registro, login, cambio de rol).
+- Permitir que el frontend evolucione el contrato sin romper consumidores.
+- Dejar la puerta abierta a refresh tokens, revocación y bloqueo por intentos fallidos, hoy
+  ausentes (§15).
 
-- Disponibilidad de boletos.
-- Reservas.
-- Validación de disponibilidad.
-- Actualización de disponibilidad.
-- Control de concurrencia.
-- Historial de reservas.
+## 4. Estilo arquitectónico
 
-Es el microservicio más crítico desde el punto de vista de consistencia y concurrencia.
+**Arquitectura hexagonal (puertos y adaptadores)** con dos contextos de nivel superior dentro
+del paquete base `com.ticketflow.user`:
 
----
+```
+com.ticketflow.user
+├── common/          # transversal a todos los contextos
+└── user/            # contexto acotado: usuarios
+```
 
-# 6. Arquitectura hexagonal por microservicio
+Reglas del estilo:
 
-Cada microservicio utiliza arquitectura hexagonal o arquitectura de puertos y adaptadores.
+1. El **dominio** no depende de Spring, JPA, HTTP ni de ninguna biblioteca de infraestructura.
+2. La **aplicación** orquesta los casos de uso usando solo los puertos declarados.
+3. Los **adaptadores** implementan los puertos y son los únicos que conocen la tecnología
+   concreta (JPA, Argon2, jjwt, HTTP).
+4. La dependencia apunta siempre **hacia adentro**: `infrastructure → application → domain`.
+5. Ningún caso de uso persiste ni hashea directamente: usa `UserRepositoryPort`,
+   `PasswordEncoderPort` y `TokenProviderPort`.
 
-La arquitectura separa:
+> La estructura de paquetes sigue la guía del repositorio:
+> `docs/guia-microservicio-clean-code.md`.
 
-- Dominio.
-- Aplicación.
-- Puertos de entrada.
-- Puertos de salida.
-- Adaptadores.
+## 5. Stack tecnológico
 
-El dominio contiene las entidades y reglas de negocio y no debe depender de:
+Versiones **obligatorias y uniformes para todo el proyecto**. Este repositorio solo declara las
+tecnologías que **usa**; las de los demás servicios están en sus respectivos
+`contrato_api.md`.
 
-- Spring.
-- JPA.
-- PostgreSQL.
-- Redis.
-- Kafka.
-- HTTP.
-- Frameworks de infraestructura.
+| Tecnología | Versión estándar | Versión actual en el repo | Estado | Uso en el servicio |
+|---|---|---|---|---|
+| Java | **25 (LTS)** | 21 | ⚠️ Pendiente de migración | Lenguaje |
+| Spring Boot | **4.1.1** | 4.1.1 | ✔ Al día | Framework, auto-configuración, actuator |
+| Spring Cloud | **2025.1.3** | 2025.1.3 | ✔ Al día | Cliente de Eureka |
+| Spring MVC | **6.x** (WebMVC) | 6.x (Boot 4.1.1) | ✔ Al día | API REST síncrona (`spring-boot-starter-webmvc`) |
+| Spring Security | **7.x** (Boot 4.1.1) | 7.x | ✔ Al día | Cadena de filtros, `STATELESS` |
+| PostgreSQL | **18.x** | 18 (`postgres:18-alpine`) | ✔ Al día | Persistencia de usuarios |
+| Hibernate / JPA | BOM de Boot 4 | 6.x | ✔ Al día | Mapeo de `UserEntity` |
+| jjwt | **0.13.0** | 0.13.0 | ✔ Al día | Emisión y validación del JWT (HS256) |
+| Argon2 | `de.mkammerer:argon2-jvm` | en el `pom.xml` | ✔ Al día | Hash de contraseñas (Argon2id) |
+| MapStruct | **1.5.5** | 1.5.5 | ✔ Al día | Mapeo entidad ↔ dominio ↔ DTO |
+| Lombok | BOM de Boot 4 | en el `pom.xml` | ✔ Al día | Reducción de código boilerplate |
+| springdoc-openapi | **3.0.x** | 3.x (BOM de Boot) | ✔ Al día | `/swagger-ui.html`, `/v3/api-docs` |
 
-La aplicación implementa los casos de uso y utiliza los puertos definidos para comunicarse con la infraestructura.
+> Este servicio **no** usa Redis, Kafka, Flyway, Resilience4j ni WebFlux: no aparecen en su stack.
+> Redis lo usan el API Gateway y el servicio de Inventario; Kafka, solo el de Inventario.
 
-Los adaptadores implementan las interfaces necesarias para conectar el sistema con tecnologías externas.
+### 5.1 Efectos de la versión estándar de Java (25)
 
----
+La migración a Java 25 habilita **hilos virtuales**. Es relevante en este servicio porque
+**Argon2 es una operación de CPU intensiva** (`ITERATIONS=2`, `MEMORY_IN_KIB=65536`,
+`PARALLELISM=1`): con hilos de plataforma, un pico de logins bloquea el pool de Tomcat. La
+migración es, por tanto, una decisión de **rendimiento**, no solo de versión.
 
-# 7. Estructura interna de referencia
-
-Ejemplo para el microservicio de Inventario:
+## 6. Estructura de paquetes
 
 ```text
-inventario-service/
-├── domain/
-│   ├── Reserva.java
-│   └── EstadoReserva.java
+src/main/java/com/ticketflow/user/
+├── UserApplication.java                  # @SpringBootApplication
 │
-├── application/
-│   ├── port/
-│   │   ├── in/
-│   │   │   └── ReservarBoletosUseCase.java
-│   │   │
-│   │   └── out/
-│   │       ├── ReservaRepositoryPort.java
-│   │       ├── DisponibilidadPort.java
-│   │       └── EventoPublisherPort.java
-│   │
-│   └── service/
-│       └── ReservarBoletosService.java
+├── common/                               # transversal a todos los contextos
+│   ├── application/dto/ApiResponse.java  # envelope de respuesta
+│   ├── domain/exception/                 # TicketflowException, RequiredAttributeException
+│   ├── domain/rules/DomainRule.java      # contrato de regla de dominio
+│   └── infrastructure/
+│       ├── config/OpenApiConfig.java
+│       └── handler/GlobalExceptionHandler.java
 │
-└── infrastructure/
-    └── adapter/
-        ├── in/
-        │   └── web/
-        │       └── ReservaController.java
-        │
-        └── out/
-            ├── persistence/
-            │   └── ReservaJpaAdapter.java
-            ├── cache/
-            │   └── RedisDisponibilidadAdapter.java
-            └── messaging/
-                └── KafkaEventoPublisherAdapter.java
-
-# 8. Microservicio de Usuarios
-
-## 8.1 Responsabilidad
-
-El microservicio de Usuarios administra la identidad y autenticación de los actores del sistema.
-
-Los roles considerados son:
-
-- comprador
-- organizador
-- staff_checkin
-
-El rol `staff_checkin` se contempla para futuras funcionalidades y no constituye una prioridad de la primera fase.
-
-## 8.2 Modelo de datos
-
-Usuario:
-
-- id
-- nombre
-- email
-- password_hash
-- rol
-- creado_en
-
-## 8.3 Endpoints principales
-
-| Método | Ruta | Descripción |
-| --- | --- | --- |
-| POST | /register | Registra un nuevo usuario |
-| POST | /login | Valida credenciales y genera un JWT |
-| GET | /me | Obtiene los datos del usuario autenticado |
-| PATCH | /users/:id/rol | Actualiza el rol de un usuario |
-
-Las contraseñas deben almacenarse utilizando un algoritmo de hash seguro como bcrypt o Argon2.
-
-Nunca se almacenan contraseñas en texto plano.
-
-## 8.4 Autenticación mediante JWT
-
-El servicio utiliza JWT para representar la identidad autenticada.
-
-El token contiene como mínimo:
-
-- `sub`: identificador del usuario.
-- `role`: rol del usuario.
-
-El token es firmado digitalmente y posteriormente validado por los demás microservicios.
-
-De esta manera, Catálogo e Inventario pueden validar la identidad y los permisos localmente sin consultar al microservicio de Usuarios en cada solicitud.
-
-Esto evita que Usuarios se convierta en un cuello de botella o punto único de falla para las operaciones del sistema.
-
-# 9. Microservicio de Catálogo y búsqueda
-
-## 9.1 Responsabilidad
-
-Catálogo administra la información estática relacionada con los eventos.
-
-Permite a los organizadores crear y administrar eventos y a los compradores consultarlos, buscarlos y filtrarlos.
-
-La disponibilidad de boletos en tiempo real no pertenece a este servicio.
-
-## 9.2 Modelo de datos
-
-### Evento
-
-- id
-- organizador_id
-- nombre
-- descripción
-- fecha
-- lugar
-- categoría
-
-### Sección
-
-- id
-- evento_id
-- nombre
-- precio
-- capacidad_total
-
-## 9.3 Endpoints principales
-
-| Método | Ruta | Descripción |
-| --- | --- | --- |
-| POST | /events | Crea un evento |
-| GET | /events?fecha=&ciudad=&categoria= | Consulta y filtra eventos |
-| GET | /events/:id | Consulta el detalle de un evento |
-| PATCH | /events/:id | Modifica un evento |
-
-## 9.4 Estrategia de caché
-
-Se utiliza el patrón `cache-aside`.
-
-Para una operación de lectura:
-
-1. El servicio consulta Redis.
-2. Si existe el dato, devuelve la información almacenada.
-3. Si no existe, consulta PostgreSQL.
-4. El resultado se almacena en Redis.
-5. Se asigna un TTL para evitar que la información permanezca indefinidamente.
-
-Cuando se modifica un evento, se invalida la entrada correspondiente de Redis.
-
-Esta estrategia es adecuada porque las consultas del catálogo serán mucho más frecuentes que las modificaciones y unos segundos de desactualización en información estática no afectan la disponibilidad de boletos.
-
-# 10. Microservicio de Inventario
-
-## 10.1 Responsabilidad
-
-Inventario administra la disponibilidad de boletos y las reservas.
-
-Es el componente que requiere mayor control de consistencia y concurrencia.
-
-La disponibilidad se representa mediante contadores atómicos en Redis.
-
-## 10.2 Modelo de datos
-
-Redis mantiene la disponibilidad actual utilizando una clave con la siguiente estructura:
-
-`availability:{evento_id}:{seccion_id}`
-
-El valor almacenado corresponde a la cantidad de boletos disponibles.
-
-PostgreSQL mantiene el registro persistente de las reservas.
-
-### Reserva
-
-- id
-- usuario_id
-- evento_id
-- seccion_id
-- cantidad
-- estado
-- creado_en
-
-Los estados de una reserva pueden ser:
-
-- PENDING
-- CONFIRMED
-- CANCELLED
-
-## 10.3 Endpoints principales
-
-| Método | Ruta | Descripción |
-| --- | --- | --- |
-| GET | /availability/:evento_id | Consulta la disponibilidad actual por sección |
-| POST | /reservations | Crea una reserva |
-| GET | /reservations/user/:id | Consulta las reservas de un usuario |
-| DELETE | /reservations/:id | Cancela una reserva, si la funcionalidad está habilitada |
-
-## 10.4 Control de disponibilidad
-
-La disponibilidad se controla mediante operaciones atómicas de Redis.
-
-Para reservar N boletos:
-
-1. El cliente solicita N boletos.
-2. Inventario ejecuta `DECRBY` sobre el contador correspondiente.
-3. Si el resultado es mayor o igual a cero, la operación puede continuar.
-4. Se registra la reserva en PostgreSQL.
-5. Si el resultado es negativo, se ejecuta `INCRBY` para restaurar el contador.
-6. Se informa al cliente que no existe disponibilidad suficiente.
-
-## 10.5 Control de concurrencia
-
-El uso de operaciones atómicas permite que varias solicitudes concurrentes modifiquen el mismo contador sin producir una condición de carrera.
-
-Por ejemplo, si existe una disponibilidad inicial de un boleto y dos usuarios intentan reservarlo simultáneamente, solo una de las operaciones podrá obtener correctamente el último boleto.
-
-El resultado esperado es:
-
-- Usuario A: reserva aceptada.
-- Usuario B: reserva rechazada.
-- Disponibilidad final: 0.
-
-Esta estrategia evita la sobreventa producida por múltiples solicitudes que consultan simultáneamente una misma cantidad disponible.
-
-## 10.6 Redis y PostgreSQL
-
-Redis es responsable de la decisión de disponibilidad en tiempo real.
-
-PostgreSQL mantiene el registro durable y auditable de las reservas.
-
-Esta separación permite que las operaciones críticas de disponibilidad sean rápidas, mientras que la base de datos conserva la información necesaria para consultar el historial.
-
-La implementación debe considerar el escenario en el que la operación en Redis sea exitosa pero la escritura posterior en PostgreSQL falle. Este caso deberá ser evaluado durante las pruebas de consistencia y resiliencia.
-
-# 11. Comunicación entre servicios
-
-La comunicación entre los microservicios utiliza principalmente REST para las operaciones síncronas.
-
-## 11.1 Usuarios
-
-Los demás servicios validan localmente el JWT generado por Usuarios.
-
-No se realiza una llamada a Usuarios en cada solicitud autenticada.
-
-## 11.2 Catálogo → Inventario
-
-Cuando se crea o configura un evento con sus secciones, Inventario debe disponer de los contadores correspondientes.
-
-Durante esta fase, la inicialización o actualización de los contadores se realiza mediante comunicación REST síncrona.
-
-Esta comunicación puede evolucionar posteriormente hacia un mecanismo basado en eventos.
-
-## 11.3 Inventario → eventos
-
-Cuando una reserva es confirmada, Inventario puede publicar un evento en Kafka.
-
-El evento contiene la información necesaria para que otros componentes puedan reaccionar sin acoplarse directamente al servicio de Inventario.
-
-# 12. Mensajería asíncrona con Kafka
-
-Apache Kafka se utiliza para comunicación basada en eventos cuando múltiples consumidores necesitan reaccionar de manera independiente ante una misma operación.
-
-Kafka se eligió sobre RabbitMQ debido principalmente al patrón de consumo esperado.
-
-| Criterio | Kafka | RabbitMQ |
-| --- | --- | --- |
-| Modelo | Log distribuido | Cola de mensajes |
-| Múltiples consumidores independientes | Sí | Sí, mediante exchanges |
-| Replay de eventos | Sí | Limitado |
-| Consumer groups | Sí | No utiliza el mismo modelo |
-| Complejidad operativa | Mayor | Menor |
-| Adecuado para eventos históricos | Sí | Menos orientado a este escenario |
-
-El caso de uso principal consiste en publicar un evento cuando Inventario confirma una reserva.
-
-Posteriormente, diferentes componentes podrán consumir ese evento de manera independiente.
-
-## 12.1 Topic principal
-
-`reservas.confirmadas`
-
-Productor:
-
-`Inventario`
-
-Consumidores futuros:
-
-- Notificaciones
-- Analítica
-
-Las funcionalidades de Notificaciones y Analítica no forman parte de los tres microservicios principales de esta fase.
-
-# 13. Estrategia de caché
-
-| Operación | Estrategia | Justificación |
-| --- | --- | --- |
-| Explorar catálogo | Redis + TTL | Alta proporción de lecturas y tolerancia a pequeños periodos de desactualización |
-| Consultar detalle del evento | Redis + TTL | Reduce consultas repetitivas a PostgreSQL |
-| Comprar boleto | Sin caché tradicional | Requiere consistencia inmediata |
-| Consultar disponibilidad | Redis | El contador representa la disponibilidad actual |
-
-Redis cumple dos funciones diferentes:
-
-1. Caché para información del catálogo.
-2. Contador atómico para disponibilidad.
-
-La disponibilidad no debe tratarse como una caché tradicional porque constituye el estado utilizado para tomar la decisión de reserva.
-
-# 14. Resiliencia y observabilidad
-
-La arquitectura incorpora mecanismos para observar y controlar el comportamiento del sistema bajo carga.
-
-| Necesidad | Herramienta | Propósito |
-| --- | --- | --- |
-| Circuit breaker y reintentos | Resilience4j | Evitar propagación de fallos entre servicios |
-| Métricas | Spring Boot Actuator + Micrometer | Exponer métricas de operación |
-| Trazabilidad distribuida | Micrometer Tracing + Zipkin | Seguir solicitudes entre servicios |
-| Rate limiting | Spring Cloud Gateway + Redis | Controlar tráfico excesivo |
-| Idempotencia | Clave de idempotencia en POST /reservations | Evitar reservas duplicadas por reintentos |
-| Mensajes fallidos | Dead-letter topic de Kafka | Gestionar eventos que no pudieron procesarse |
-
-Estas herramientas permiten obtener información para posteriormente analizar:
-
-- Latencia.
-- Throughput.
-- Errores.
-- Uso de CPU.
-- Uso de memoria.
-- Saturación.
-- Cantidad de solicitudes.
-- Comportamiento ante incrementos de tráfico.
-
-# 15. Idempotencia de reservas
-
-La operación de creación de reservas debe considerar los reintentos de red.
-
-Un cliente puede enviar nuevamente una solicitud porque no recibió la respuesta original, aunque la reserva ya haya sido procesada.
-
-Para evitar reservas duplicadas se utilizará una clave de idempotencia asociada a la solicitud.
-
-Conceptualmente, una solicitud de reserva puede incluir:
-
-`Idempotency-Key: identificador-unico`
-
-Si el mismo identificador se recibe nuevamente, el servicio debe reconocer que la operación ya fue procesada y evitar crear una segunda reserva.
-
-# 16. API Gateway
-
-El sistema utiliza Spring Cloud Gateway como punto de entrada lógico hacia los microservicios.
-
-Sus responsabilidades incluyen:
-
-- Enrutamiento.
-- Control de acceso.
-- Rate limiting.
-- Manejo de solicitudes comunes.
-- Integración con Redis para mecanismos de limitación de tráfico.
-
-El Gateway no contiene lógica de negocio.
-
-La lógica de negocio permanece dentro de los microservicios correspondientes.
-
-En el entorno de AWS, el Application Load Balancer se utiliza para distribuir el tráfico hacia las instancias desplegadas.
-
-# 17. Despliegue en AWS
-
-El despliegue se centraliza en AWS para evitar la complejidad de administrar múltiples proveedores de nube.
-
-Cloudflare constituye una excepción y se utiliza únicamente para CDN y DNS.
-
-## 17.1 Componentes
-
-| Capa | Servicio | Propósito |
-| --- | --- | --- |
-| Cómputo | ECS Fargate | Ejecutar contenedores |
-| Balanceo | Application Load Balancer | Distribuir tráfico |
-| Base de datos | RDS PostgreSQL | Persistencia |
-| Caché | ElastiCache Redis | Caché y disponibilidad |
-| Mensajería | Kafka en Docker/EC2 | Comunicación basada en eventos |
-| Almacenamiento | Amazon S3 | Archivos y contenido estático |
-| CDN / DNS | Cloudflare | Distribución y resolución de contenido |
-| Secretos | Systems Manager Parameter Store | Configuración sensible |
-| Registro de imágenes | Amazon ECR | Almacenamiento de imágenes Docker |
-| CI/CD | GitHub Actions | Automatización del despliegue |
-
-## 17.2 PostgreSQL
-
-Se utilizará PostgreSQL como sistema de persistencia.
-
-Cada microservicio debe ser propietario de sus datos.
-
-La separación lógica puede realizarse mediante esquemas independientes dentro de una misma instancia durante el prototipo.
-
-Pueden existir los siguientes esquemas:
-
-- `usuarios`
-- `catalogo`
-- `inventario`
-
-Esta configuración permite reducir costos y complejidad durante el desarrollo.
-
-En una arquitectura de mayor escala, cada servicio podría evolucionar hacia una instancia de base de datos independiente.
-
-## 17.3 Kafka
-
-Durante el desarrollo académico Kafka puede ejecutarse mediante Docker.
-
-Para un despliegue productivo se podría utilizar Amazon MSK, pero no constituye una prioridad para el prototipo debido a su costo y complejidad adicional.
-
-# 18. Contenedores y entorno de desarrollo
-
-Durante el desarrollo y las pruebas de carga se utilizará Docker Compose.
-
-El entorno puede contener:
-
-- Usuarios.
-- Catálogo.
-- Inventario.
-- PostgreSQL.
-- Redis.
-- Kafka.
-- API Gateway.
-- Herramientas de observabilidad.
-
-Docker Compose permite reproducir el entorno de pruebas y facilita la ejecución de escenarios de alta concurrencia.
-
-El uso de Kubernetes no forma parte del alcance inicial.
-
-# 19. Escenario crítico de arquitectura
-
-El escenario principal utilizado para validar la arquitectura es la apertura de venta de un evento de alta demanda.
-
-En este escenario:
-
-1. Un evento se encuentra configurado en Catálogo.
-2. Inventario mantiene los contadores de disponibilidad.
-3. La venta se habilita.
-4. Una gran cantidad de usuarios consulta simultáneamente el evento.
-5. Los usuarios seleccionan una sección.
-6. Los usuarios solicitan reservar boletos.
-7. Inventario ejecuta operaciones atómicas sobre Redis.
-8. Las solicitudes que obtienen disponibilidad continúan con la creación de la reserva.
-9. Las solicitudes que no obtienen disponibilidad son rechazadas.
-10. El sistema registra las reservas en PostgreSQL.
-11. Las reservas confirmadas pueden generar eventos para consumidores posteriores.
-
-El escenario permite evaluar principalmente:
-
-- Concurrencia.
-- Latencia.
-- Throughput.
-- Disponibilidad.
-- Tasa de errores.
-- Consistencia.
-- Uso de recursos.
-- Comportamiento ante picos de tráfico.
-
-# 20. Escalabilidad
-
-Los microservicios están diseñados para poder escalar independientemente.
-
-Por ejemplo:
-
-- Catálogo puede aumentar sus instancias cuando exista una gran cantidad de consultas.
-- Inventario puede aumentar sus instancias durante una apertura de venta.
-- Usuarios puede escalar de acuerdo con las necesidades de autenticación.
-
-El estado crítico de disponibilidad no se mantiene únicamente en memoria local de una instancia.
-
-Redis permite que diferentes instancias de Inventario trabajen sobre los mismos contadores de disponibilidad.
-
-Esto evita que cada instancia tenga una visión diferente de los boletos restantes.
-
-# 21. Principios de consistencia
-
-La arquitectura distingue entre información que puede tolerar cierta desactualización e información que requiere consistencia inmediata.
-
-## 21.1 Información con tolerancia a desactualización
-
-Ejemplos:
-
-- Nombre del evento.
-- Descripción.
-- Lugar.
-- Categoría.
-- Información general de las secciones.
-
-Esta información puede utilizar caché.
-
-## 21.2 Información que requiere consistencia inmediata
-
-El principal ejemplo es:
-
-- Cantidad de boletos disponibles.
-
-Esta información se mantiene mediante contadores atómicos en Redis.
-
-La separación permite utilizar diferentes estrategias de almacenamiento según los requisitos de cada operación.
-
-# 22. Reglas arquitectónicas
-
-Las siguientes reglas deben mantenerse durante el desarrollo:
-
-1. Cada microservicio debe tener una responsabilidad de negocio clara.
-2. Cada servicio debe ser propietario de sus propios datos.
-3. Ningún servicio debe modificar directamente la base de datos de otro servicio.
-4. El dominio no debe depender de tecnologías de infraestructura.
-5. Redis debe utilizarse de acuerdo con la responsabilidad definida para cada operación.
-6. Las operaciones de disponibilidad deben ser atómicas.
-7. La lógica de negocio no debe implementarse en los controladores REST.
-8. Los controladores deben comunicarse con casos de uso mediante puertos de entrada.
-9. La persistencia debe accederse mediante puertos de salida.
-10. La autenticación entre servicios debe utilizar JWT.
-11. Las reservas deben contemplar idempotencia.
-12. Las operaciones críticas deben generar métricas suficientes para su evaluación.
-13. Las decisiones de escalabilidad deben estar respaldadas por métricas obtenidas durante las pruebas.
-
-# 23. Tecnologías fuera del alcance inicial
-
-Para mantener el alcance adecuado al tamaño del equipo y al tiempo disponible, las siguientes tecnologías o funcionalidades no forman parte de la primera fase:
-
-- Kubernetes.
-- Elasticsearch.
-- Service Mesh.
-- Integración con sistemas externos de pago.
-- Procesamiento real de pagos.
-- Facturación.
-- Notificaciones reales.
-- Aplicación móvil.
-- Sistemas reales de check-in.
-- Integraciones externas.
-- Sistemas de recomendación.
-
-Estas funcionalidades pueden considerarse para fases posteriores si los resultados del prototipo justifican su incorporación.
-
-# 24. Orden de construcción
-
-El desarrollo de los microservicios seguirá el siguiente orden:
-
-## 24.1 Usuarios
-
-Se construirá primero porque el resto del sistema necesita autenticación y autorización.
-
-Incluye:
-
-- Registro.
-- Inicio de sesión.
-- JWT.
-- Roles.
-- Perfil.
-
-## 24.2 Catálogo y búsqueda
-
-Se construirá después porque permite crear los eventos que posteriormente serán utilizados por Inventario.
-
-Incluye:
-
-- Creación de eventos.
-- Consulta de eventos.
-- Búsqueda.
-- Filtrado.
-- Consulta de detalle.
-- Configuración de secciones.
-- Precios.
-- Capacidades.
-
-## 24.3 Inventario
-
-Se construirá posteriormente debido a que contiene la lógica más crítica.
-
-Incluye:
-
-- Inicialización de disponibilidad.
-- Consulta de disponibilidad.
-- Reservas.
-- Actualización de disponibilidad.
-- Control de concurrencia.
-- Idempotencia.
-- Historial de reservas.
-
-# 25. Relación con las pruebas de carga
-
-La arquitectura está diseñada para permitir pruebas de carga y concurrencia.
-
-Los escenarios principales serán:
-
-- Carga sostenida.
-- Incremento repentino de usuarios.
-- Pico de tráfico durante la apertura de un evento.
-- Múltiples usuarios intentando reservar los últimos boletos.
-- Consultas simultáneas del catálogo.
-- Solicitudes concurrentes de disponibilidad.
-- Reservas simultáneas sobre una misma sección.
-
-Las pruebas permitirán medir:
-
-- Tiempo de respuesta.
-- Throughput.
-- Porcentaje de errores.
-- Disponibilidad.
-- Consumo de CPU.
-- Consumo de memoria.
-- Capacidad de procesamiento.
-- Comportamiento del sistema ante incrementos de carga.
-- Recuperación después de una situación de sobrecarga.
-
-# 26. Evolución futura
-
-La arquitectura está diseñada para permitir incorporar nuevos componentes sin modificar directamente la lógica de los servicios existentes.
-
-Entre las posibles extensiones se encuentran:
-
-- Notificaciones.
-- Check-in.
-- Analítica.
-- Monitoreo predictivo.
-- Recomendaciones de escalabilidad.
-- Automatización de decisiones operativas.
-
-Estas extensiones podrán aprovechar los eventos publicados por Inventario mediante Kafka.
-
-La incorporación de nuevas tecnologías deberá justificarse según las necesidades observadas durante las pruebas y no únicamente por motivos tecnológicos.
-
-# 27. Estado actual de la arquitectura
-
-La arquitectura definida para esta fase está compuesta por:
-
-- 3 microservicios:
-  - Usuarios.
-  - Catálogo y búsqueda.
-  - Inventario.
-- Arquitectura hexagonal dentro de cada microservicio.
-- PostgreSQL para persistencia.
-- Redis para caché y contadores atómicos.
-- JWT para autenticación.
-- REST para comunicación síncrona.
-- Kafka para comunicación basada en eventos.
-- Spring Cloud Gateway como API Gateway.
-- Docker Compose para desarrollo y pruebas.
-- AWS ECS Fargate para despliegue en nube.
-- Cloudflare para CDN y DNS.
-- Herramientas de observabilidad mediante Actuator, Micrometer y trazabilidad distribuida.
-
-El componente central para el escenario de alta demanda es Inventario, debido a que debe garantizar que múltiples solicitudes concurrentes no produzcan sobreventa.
-
-La arquitectura prioriza simplicidad, separación de responsabilidades, capacidad de escalamiento y control de concurrencia, manteniendo el alcance adecuado para un prototipo académico desarrollado por un equipo pequeño.
+└── user/                                 # contexto acotado: usuarios
+    ├── application/
+    │   ├── ports/
+    │   │   ├── in/
+    │   │   │   ├── dto/                  # RegisterRequestDTO, LoginRequestDTO,
+    │   │   │   │                         # LoginResponseDTO, GetUserResponseDTO,
+    │   │   │   │                         # ChangeRoleRequestDTO
+    │   │   │   └── service/              # RegisterUserPort, LoginUserPort,
+    │   │   │                             # GetMePort, ChangeRolePort
+    │   │   └── out/                      # UserRepositoryPort, PasswordEncoderPort,
+    │   │                                 # TokenProviderPort
+    │   └── usecase/                      # RegisterUserUseCase, LoginUserUseCase,
+    │                                     # GetMeUseCase, ChangeRoleUseCase
+    ├── domain/
+    │   ├── exception/
+    │   │   ├── business/                 # EmailAlreadyExists, InvalidCredentials,
+    │   │   │                             # RoleNotAllowedForRegistration,
+    │   │   │                             # UnauthorizedRoleChange, UserNotFound
+    │   │   └── format/                   # UserNameInvalid, UserEmailInvalid,
+    │   │                                 # UserPasswordInvalid
+    │   ├── models/
+    │   │   ├── UserDomain.java
+    │   │   └── enums/UserRole.java
+    │   └── rules/                        # UserValidatorRule, UserNameValidRule,
+    │                                     # UserEmailValidRule, UserPasswordValidRule,
+    │                                     # UserRoleValidRule
+    └── infrastructure/
+        ├── adapter/
+        │   ├── in/controller/            # AuthController, UserController
+        │   └── out/
+        │       ├── persistence/
+        │       │   ├── entity/UserEntity.java
+        │       │   ├── mapper/UserEntityMapper.java
+        │       │   ├── persistence/UserJpaAdapter.java
+        │       │   └── repository/UserRepository.java
+        │       └── security/             # Argon2PasswordEncoder, JwtTokenProvider,
+        │                                 # AuthenticatedUser
+        ├── config/SecurityConfig.java
+        ├── handler/UserExceptionHandler.java
+        └── security/JwtAuthenticationFilter.java
+```
+
+## 7. Componentes
+
+### 7.1 Dominio
+
+| Elemento | Responsabilidad |
+|---|---|
+| `UserDomain` | Entidad de aggregate root. Inmutable en identidad (`id`, `email`, `createdAt`); `name`, `role` y `updatedAt` son mutables mediante `changeRole()` / `changePassword()`. Se construye por factorías (`create`, `from`) y se valida con `UserValidatorRule`. |
+| `UserRole` | Enum de roles. **Nombre Java en inglés, valor JSON en español** (ver §10.2). |
+| `UserValidatorRule` | Regla compuesta: valida nombre, email, contraseña y rol. |
+| `UserNameValidRule` / `UserEmailValidRule` / `UserPasswordValidRule` / `UserRoleValidRule` | Reglas unitarias de formato y coherencia. |
+| Excepciones de negocio | `EmailAlreadyExistsException`, `InvalidCredentialsException`, `RoleNotAllowedForRegistrationException`, `UnauthorizedRoleChangeException`, `UserNotFoundException`. |
+| Excepciones de formato | `UserNameInvalidException`, `UserEmailInvalidException`, `UserPasswordInvalidException`. |
+
+Todas heredan de `TicketflowException` (excepción de negocio) o de `RequiredAttributeException`
+(atributo obligatorio ausente). Se traducen a respuestas HTTP en `UserExceptionHandler` y
+`GlobalExceptionHandler`.
+
+### 7.2 Aplicación (casos de uso)
+
+| Caso de uso | Puerto de entrada | Responsabilidad |
+|---|---|---|
+| `RegisterUserUseCase` | `RegisterUserPort` | Valida el rol permitido para registro, comprueba que el email no exista, hashea la contraseña y persiste el usuario. |
+| `LoginUserUseCase` | `LoginUserPort` | Verifica credenciales contra el hash almacenado y emite el JWT. |
+| `GetMeUseCase` | `GetMePort` | Devuelve el perfil del usuario autenticado. |
+| `ChangeRoleUseCase` | `ChangeRolePort` | Cambia el rol de un usuario; exige que el actor sea `ADMIN` y no puede degradarse a sí mismo. |
+
+**Puertos de salida** (contratos con la infraestructura):
+
+| Puerto | Implementación | Responsabilidad |
+|---|---|---|
+| `UserRepositoryPort` | `UserJpaAdapter` | Persistencia de `UserDomain`. |
+| `PasswordEncoderPort` | `Argon2PasswordEncoder` | Hash y verificación de contraseñas. |
+| `TokenProviderPort` | `JwtTokenProvider` | Emisión del JWT. |
+
+### 7.3 Infraestructura
+
+| Componente | Responsabilidad |
+|---|---|
+| `AuthController` | `POST /register`, `POST /login`. |
+| `UserController` | `GET /me`, `PATCH /users/{id}/rol`. Recibe el id y el rol del actor como atributos de request inyectados por el filtro JWT. |
+| `JwtAuthenticationFilter` | Lee `Authorization: Bearer`, valida el token y pone `userId` y `role` como atributos de la request. |
+| `SecurityConfig` | Cadena de filtros `STATELESS`, CORS y reglas de autorización (§10.1). |
+| `JwtTokenProvider` | Emisión (y parseo) del JWT con jjwt. |
+| `Argon2PasswordEncoder` | Hash Argon2id. |
+| `UserEntity` / `UserEntityMapper` / `UserJpaAdapter` / `UserRepository` | Persistencia JPA. |
+| `ApiResponse<T>` | Envelope de todas las respuestas. |
+| `UserExceptionHandler` / `GlobalExceptionHandler` | Traducción de excepciones a códigos HTTP. |
+| `OpenApiConfig` | Configuración de springdoc. |
+
+## 8. Modelo de datos
+
+### 8.1 Dominio (`UserDomain`)
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| `id` | `UUID` | Identificador. En la base de datos lo asigna Hibernate. |
+| `name` | `String` | Obligatorio, longitud máxima 50. |
+| `email` | `String` | Obligatorio, único, longitud máxima 255. |
+| `password` | `String` | Obligatorio. Contiene el **hash**, nunca la contraseña en claro. |
+| `role` | `UserRole` | Obligatorio. |
+| `createdAt` | `LocalDateTime` | Solo lectura. |
+| `updatedAt` | `LocalDateTime` | Se actualiza en `changeRole()` y `changePassword()`. |
+
+### 8.2 Tabla `users` (PostgreSQL)
+
+| Columna | Tipo | Restricciones |
+|---|---|---|
+| `id` | `uuid` | PK |
+| `name` | `varchar(50)` | `NOT NULL` |
+| `email` | `varchar(255)` | `NOT NULL`, **única** |
+| `password` | `varchar` | `NOT NULL` (hash Argon2id) |
+| `role` | `varchar(20)` | `NOT NULL`, `@Enumerated(EnumType.STRING)` |
+| `created_at` | `timestamp` | `NOT NULL`, no actualizable |
+| `updated_at` | `timestamp` | `NOT NULL` |
+
+> **La base de datos se llama `user`** (palabra reservada en PostgreSQL; el entrypoint del
+> contenedor la entrecomilla). El esquema **no está versionado**: se crea con
+> `spring.jpa.hibernate.ddl-auto=update` (solo desarrollo). La especificación de plataforma exige
+> Flyway con `V1__usuarios.sql`, `V2__refresh_tokens.sql` y `V3__outbox.sql` (ver §15).
+
+## 9. Contrato HTTP
+
+Detalle completo (peticiones, respuestas, errores, desviaciones) en
+`docs_ia/contexto/contrato_api.md`.
+
+### 9.1 Prefijo `/api/` (obligatorio)
+
+> **Norma del proyecto:** todo endpoint de negocio debe vivir bajo el prefijo **`/api/`**.
+
+| Método | Ruta objetivo | Rol | Ruta actual |
+|---|---|---|---|
+| POST | `/api/auth/register` | Público | `POST /register` ⚠️ |
+| POST | `/api/auth/login` | Público | `POST /login` ⚠️ |
+| POST | `/api/auth/refresh` | Público | ❌ No implementado |
+| POST | `/api/auth/logout` | Autenticado | ❌ No implementado |
+| GET | `/api/usuarios/me` | Autenticado | `GET /me` ⚠️ |
+| PUT | `/api/usuarios/me` | Autenticado | ❌ No implementado |
+| PUT | `/api/usuarios/me/password` | Autenticado | ❌ No implementado |
+| POST | `/api/usuarios/organizador/solicitud` | COMPRADOR | ❌ No implementado |
+| GET | `/api/usuarios/{id}` | ADMIN | ❌ No implementado |
+| PATCH | `/api/usuarios/{id}/rol` | ADMIN | `PATCH /users/{id}/rol` ⚠️ |
+| PATCH | `/api/usuarios/{id}/estado` | ADMIN | ❌ No implementado |
+
+⚠️ = la functionality existe pero **sin el prefijo `/api/`**: es la desviación nº 1 (§15).
+La migración obliga a cambiar **en el mismo despliegue** los controladores de este servicio, las
+rutas y la lista de rutas públicas del `JwtAuthFilter` del gateway, y el BFF del frontend.
+
+### 9.2 Envoltura de respuesta
+
+Todas las respuestas usan `ApiResponse<T>`:
+
+```json
+{ "success": true, "message": "...", "data": { }, "errors": null, "timestamp": "..." }
+```
+
+La especificación de plataforma exige **RFC 9457 `application/problem+json`**; el envoltorio
+actual es una desviación (§15).
+
+### 9.3 Endpoints de infraestructura
+
+| Ruta | Descripción |
+|---|---|
+| `/actuator/**` | Salud e información del servicio. |
+| `/swagger-ui.html`, `/v3/api-docs/**` | Documentación OpenAPI (springdoc). |
+
+Estos endpoints **no** llevan el prefijo `/api/`: son de infraestructura.
+
+## 10. Autenticación y autorización
+
+### 10.1 Cadena de seguridad
+
+- **Sin estado:** `SessionCreationPolicy.STATELESS`; no hay sesión ni cookies de servidor.
+- **CSRF** deshabilitado (no aplica a una API sin sesión con token en cabecera).
+- **Filtro JWT** (`JwtAuthenticationFilter`) antes de `UsernamePasswordAuthenticationFilter`.
+- **Rutas públicas:** `/register`, `/login`, `/v3/api-docs/**`, `/swagger-ui/**`,
+  `/swagger-ui.html`, `/actuator/**` y cualquier `OPTIONS` (preflight).
+- **Resto:** `authenticated()`. El punto de entrada de error responde `401` sin cuerpo.
+- **CORS:** solo `http://localhost:8081`; methods `GET, POST, PUT, PATCH, DELETE, OPTIONS`;
+  headers `Authorization, Content-Type`. El navegador nunca llama a este servicio directamente:
+  entra por el BFF del frontend (server-side) o por el gateway.
+- **Autorización por rol:** el controlador de cambio de rol lee el rol del actor desde los
+  atributos de la request y `ChangeRoleUseCase` exige `ADMIN`.
+
+### 10.2 Roles
+
+| Enum Java | Valor JSON | Uso |
+|---|---|---|
+| `BUYER` | `comprador` | Rol por defecto al registrarse. |
+| `ORGANIZER` | `organizador` | No se permite en el registro público. |
+| `STAFF_CHECKIN` | `staff_checkin` | No se permite en el registro público. |
+| `ADMIN` | `admin` | Único rol que puede cambiar roles. |
+
+> El **nombre del enum es en inglés** (convención de código) y el **valor JSON es el de la
+> especificación** (español). `UserRole` usa `@JsonValue` para serializar y `@JsonCreator` para
+> deserializar (comparación sin distinguir mayúsculas). Cambiar uno obliga a cambiar el otro.
+
+### 10.3 JWT
+
+- **Algoritmo:** HS256. Clave simétrica compartida (`jwt.secret`), **≥ 32 bytes**.
+- **Expiración:** `jwt.expiration-ms` = `86400000` (**24 h**).
+- **Claims emitidos:** `sub` (uuid del usuario), `email`, `role` (valor JSON), `iat`, `exp`.
+- **Sin `jti`**: no hay mecanismo de revocación (§15).
+- **Emisión:** `JwtTokenProvider` (jjwt 0.13.0). El **gateway** valida la firma con la **misma
+  clave compartida**; este servicio no comparte sesión con el gateway, solo secreto.
+- El **secreto debe coincidir** con el del API Gateway: si difieren, el gateway rechaza todos los
+  tokens.
+
+## 11. Persistencia
+
+- **Tecnología:** Spring Data JPA + Hibernate sobre PostgreSQL 18.
+- **Esquema:** base de datos `user`, tabla `users` (única).
+- **Migraciones:** **no hay Flyway**. El esquema se crea con `ddl-auto=update` (solo dev).
+- **Mapeo:** `UserEntity` ↔ `UserDomain` mediante `UserEntityMapper` (MapStruct); la
+  persistencia se aísla en `UserJpaAdapter`, que implementa `UserRepositoryPort`.
+- **Consultas:** solo por id y por email (unicidad); no hay consultas de listado ni paginación.
+- **Transacciones:** implícitas en los casos de uso que escriben (Spring `@Transactional` en la
+  capa de aplicación).
+
+## 12. Integraciones externas
+
+| Sistema | Estado | Detalle |
+|---|---|---|
+| **PostgreSQL** | ✔ En uso | Almacén de usuarios. |
+| **Eureka** | ✔ En uso | Se registra como `ticketflow-user-service`; configurable con `EUREKA_ENABLED=false` en pruebas. |
+| **Redis** | ✖ No se usa | La especificación contempla `auth:fail:{email}` (bloqueo por intentos fallidos) y `auth:revoked:{jti}` (revocación). No implementado (§15). |
+| **Kafka** | ✖ No se usa | La especificación contempla el topic `usuarios.registrados` (productor). No implementado: este servicio no publica eventos (§15). |
+| **API Gateway** | ✔ Consume | Solo por contrato HTTP: el gateway reenvía las peticiones y valida el JWT. No hay llamadas de usuario → gateway. |
+
+## 13. Configuración
+
+| Clave | Valor por defecto | Descripción |
+|---|---|---|
+| `server.port` | `8081` (`${SERVER_PORT:8081}`) | Puerto HTTP. |
+| `spring.application.name` | `ticketflow-user-service` | Nombre de registro en Eureka. |
+| `spring.datasource.url` | `${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/user}` | JDBC. |
+| `spring.jpa.hibernate.ddl-auto` | `update` | Solo dev: crea/actualiza el esquema. |
+| `jwt.secret` | — (variable de entorno) | Secreto HS256 compartido con el gateway. **≥ 32 bytes.** |
+| `jwt.expiration-ms` | `86400000` | Validez del token (24 h). |
+| `eureka.client.enabled` | `${EUREKA_ENABLED:true}` | Permite desactivar el registro en pruebas. |
+| `springdoc.swagger-ui.path` | `/swagger-ui.html` | Documentación. |
+
+## 14. Observabilidad
+
+- **Actuator** expuesto en `/actuator/**`: `health`, `info`, `metrics`.
+- **OpenAPI** en `/swagger-ui.html` y `/v3/api-docs`.
+- **Logs:** el acceso HTTP y los errores de negocio quedan en el log de la aplicación; no hay
+  trazas distribuidas ni métricas de negocio propias (correlación `X-Request-Id` no implementada;
+  la realiza el gateway en el destino).
+- **Health check:** `/actuator/health` (la especificación pide `liveness` y `readiness`
+  separados: no implementado).
+
+## 15. Desviaciones respecto de la especificación de plataforma
+
+| # | Tema | Especificación | Implementado | Impacto |
+|---|---|---|---|---|
+| 1 | **Prefijo de rutas** | `/api/auth/**`, `/api/usuarios/**` | `/register`, `/login`, `/me`, `/users/{id}/rol` | **Incumple la norma del proyecto** (§9.1). La migración exige cambiar a la vez este servicio, el gateway, el frontend y los `contrato_api.md`. |
+| 2 | **Java** | **25 LTS** | **21** | Sin hilos virtuales: Argon2 bloquea hilos de plataforma (§5.1). |
+| 3 | Spring Boot | 4.1.1 | 4.1.1 | ✔ Al día |
+| 4 | Esquema de BD | `usuarios` + `refresh_tokens` + `outbox` + `eventos_procesados` | BD `user`, tabla `users` | Sin refresh tokens, outbox ni idempotencia de eventos. |
+| 5 | Migraciones | Flyway | `ddl-auto=update` | El esquema no es reproducible ni versionado. |
+| 6 | Redis | `auth:fail:*`, `auth:revoked:*` | No se usa | Sin bloqueo por intentos fallidos ni revocación de tokens. |
+| 7 | Kafka | publica `usuarios.registrados` | No publica | Las reacciones a altas de usuario no son posibles. |
+| 8 | Formato de error | RFC 9457 `problem+json` | Envoltura `ApiResponse` | Inconsistente con el resto de la plataforma; migrarlo afecta al frontend (requiere decisión). |
+| 9 | Expiración y refresh | Access 15 min + refresh 7 días con rotación | 24 h, sin refresh, sin logout | Ventana de robo mayor; el logout es imposible. |
+| 10 | Nombre en Eureka | `usuarios-service` | `ticketflow-user-service` | Cosmético, pero condiciona las rutas `lb://` del gateway. |
+| 11 | Hash de contraseña | BCrypt coste 12 | **Argon2id** (2 iteraciones, 64 MiB, paralelismo 1) | Más resistente que BCrypt; requiere más memoria y CPU. El cambio de algoritmo invalida los hashes existentes: necesita estrategia de migración. |
+| 12 | Health | `liveness` y `readiness` separados | `/actuator/health` único | El balanceador no distingue «vivo» de «no preparado». |
+
+## 16. Reglas arquitectónicas
+
+1. El dominio no importa nada de Spring, JPA, HTTP ni de librerías de infraestructura.
+2. Los casos de uso no conocen la tecnología: solo usan puertos.
+3. Toda regla de negocio vive en `domain/rules` y su excepción en `domain/exception`.
+4. Todo endpoint nuevo **debe** usar el prefijo `/api/` (§9.1) y devolver `ApiResponse<T>`.
+5. Ningún endpoint nuevo expone contraseñas ni hashes.
+6. El rol viaja siempre como **valor JSON** (`comprador`, `organizador`, `staff_checkin`, `admin`).
+7. Cambiar `jwt.secret` invalida todos los tokens emitidos: es una operación coordinada con el
+   gateway.
+8. Toda ruta nueva debe añadirse a la lista de rutas públicas del `SecurityConfig` **solo** si es
+   realmente pública.
+
+## 17. Estado de implementación (2026-10)
+
+| Capacidad | Estado |
+|---|---|
+| Registro de usuarios | ✔ Implementado (`POST /register`) |
+| Inicio de sesión y emisión de JWT | ✔ Implementado (`POST /login`) |
+| Perfil del usuario autenticado | ✔ Implementado (`GET /me`) |
+| Cambio de rol por administrador | ✔ Implementado (`PATCH /users/{id}/rol`) |
+| Refresh token / logout / revocación | ✖ No implementado |
+| Bloqueo por intentos fallidos (Redis) | ✖ No implementado |
+| Publicación de `usuarios.registrados` (Kafka) | ✖ No implementado |
+| Listado y consulta de usuarios por id | ✖ No implementado |
+| Solicitud de rango de organizador | ✖ No implementado |
+| Migración a Java 25 | ✖ Pendiente |
+| Prefijo `/api/` en las rutas | ✖ Pendiente |
+| Migraciones Flyway | ✖ Pendiente |
+
+**Topología:** puerto **8081**; nombre en Eureka **`ticketflow-user-service`**; base de datos
+PostgreSQL **`user`**.
+
+## 18. Cómo mantener este documento
+
+1. Cambiar un endpoint (ruta, body, rol, código) obliga a actualizar §9 y el
+   `docs_ia/contexto/contrato_api.md` en el mismo cambio.
+2. Cambiar una regla de negocio obliga a actualizar §7 y las pruebas de dominio.
+3. Cambiar el stack (versión, dependencia) obliga a actualizar §5 y §15.
+4. Cerrar una desviación obliga a mover la fila correspondiente de §15 a §17.
+5. Toda decisión arquitectónica nueva se registra en `docs_ia/decisiones/` (`DA-xxx`).

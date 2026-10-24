@@ -1,21 +1,23 @@
 package com.ticketflow.user.user.infrastructure.adapter.in.controller;
 
 import com.ticketflow.user.common.application.dto.ApiResponse;
-import com.ticketflow.user.user.application.ports.in.service.LoginUserPort;
-import com.ticketflow.user.user.application.ports.in.service.RegisterUserPort;
 import com.ticketflow.user.user.application.ports.in.dto.GetUserResponseDTO;
 import com.ticketflow.user.user.application.ports.in.dto.LoginRequestDTO;
 import com.ticketflow.user.user.application.ports.in.dto.LoginResponseDTO;
 import com.ticketflow.user.user.application.ports.in.dto.RegisterRequestDTO;
+import com.ticketflow.user.user.application.ports.in.service.LoginUserPort;
+import com.ticketflow.user.user.application.ports.in.service.RegisterUserPort;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
+@RequestMapping("/api/auth")
 @RequiredArgsConstructor
 @Tag(name = "Auth", description = "Endpoints for registration and authentication")
 public class AuthController {
