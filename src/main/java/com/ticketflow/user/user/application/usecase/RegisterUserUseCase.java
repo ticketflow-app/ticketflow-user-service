@@ -5,13 +5,14 @@ import com.ticketflow.user.user.application.ports.in.dto.RegisterRequestDTO;
 import com.ticketflow.user.user.application.ports.in.service.RegisterUserPort;
 import com.ticketflow.user.user.application.ports.out.PasswordEncoderPort;
 import com.ticketflow.user.user.application.ports.out.UserRepositoryPort;
-import com.ticketflow.user.user.domain.models.enums.UserRole;
 import com.ticketflow.user.user.domain.exception.business.EmailAlreadyExistsException;
 import com.ticketflow.user.user.domain.exception.business.RoleNotAllowedForRegistrationException;
 import com.ticketflow.user.user.domain.models.UserDomain;
+import com.ticketflow.user.user.domain.models.enums.UserRole;
 import com.ticketflow.user.user.domain.rules.UserEmailValidRule;
 import com.ticketflow.user.user.domain.rules.UserNameValidRule;
 import com.ticketflow.user.user.domain.rules.UserPasswordValidRule;
+import com.ticketflow.user.user.domain.rules.UserPhoneValidRule;
 import com.ticketflow.user.user.domain.rules.UserRoleValidRule;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
@@ -32,6 +33,7 @@ public class RegisterUserUseCase implements RegisterUserPort {
         UserNameValidRule.validate(request.name());
         UserEmailValidRule.validate(request.email());
         UserPasswordValidRule.validate(request.password());
+        UserPhoneValidRule.validate(request.phone());
 
         UserRole role = request.role() == null ? UserRole.BUYER : request.role();
         UserRoleValidRule.validate(role);
@@ -39,12 +41,19 @@ public class RegisterUserUseCase implements RegisterUserPort {
             throw new RoleNotAllowedForRegistrationException();
         }
 
-        if (userRepository.existsByEmail(request.email())) {
+        if (userRepository.existsByEmailIgnoreCase(request.email())) {
             throw new EmailAlreadyExistsException();
         }
 
         String encodedPassword = passwordEncoder.encode(request.password());
-        UserDomain user = UserDomain.create(UUID.randomUUID(), request.name(), request.email(), encodedPassword, role);
+        UserDomain user = UserDomain.create(
+                UUID.randomUUID(),
+                request.name().trim(),
+                request.email().trim().toLowerCase(),
+                UserPhoneValidRule.normalize(request.phone()),
+                encodedPassword,
+                role
+        );
         userRepository.save(user);
 
         return GetUserResponseDTO.fromDomain(user);

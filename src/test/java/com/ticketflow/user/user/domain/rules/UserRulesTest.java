@@ -3,6 +3,7 @@ package com.ticketflow.user.user.domain.rules;
 import com.ticketflow.user.user.domain.exception.format.UserEmailInvalidException;
 import com.ticketflow.user.user.domain.exception.format.UserNameInvalidException;
 import com.ticketflow.user.user.domain.exception.format.UserPasswordInvalidException;
+import com.ticketflow.user.user.domain.exception.format.UserPhoneInvalidException;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -34,6 +35,20 @@ class UserRulesTest {
         assertThatThrownBy(() -> UserEmailValidRule.validate("not-an-email")).isInstanceOf(UserEmailInvalidException.class);
         assertThatThrownBy(() -> UserEmailValidRule.validate(null)).isInstanceOf(UserEmailInvalidException.class);
         assertThatThrownBy(() -> UserEmailValidRule.validate("")).isInstanceOf(UserEmailInvalidException.class);
+    }
+
+    @Test
+    void phoneRule_acceptsValidPhonesAndBlankValues() {
+        assertThatCode(() -> UserPhoneValidRule.validate("+57 300 123 4567")).doesNotThrowAnyException();
+        assertThatCode(() -> UserPhoneValidRule.validate("(601) 555-0101")).doesNotThrowAnyException();
+        assertThatCode(() -> UserPhoneValidRule.validate(null)).doesNotThrowAnyException();
+        assertThatCode(() -> UserPhoneValidRule.validate("   ")).doesNotThrowAnyException();
+    }
+
+    @Test
+    void phoneRule_rejectsInvalidPhones() {
+        assertThatThrownBy(() -> UserPhoneValidRule.validate("abc1234")).isInstanceOf(UserPhoneInvalidException.class);
+        assertThatThrownBy(() -> UserPhoneValidRule.validate("123")).isInstanceOf(UserPhoneInvalidException.class);
     }
 
     @Test

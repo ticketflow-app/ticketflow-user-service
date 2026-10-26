@@ -1,5 +1,7 @@
 package com.ticketflow.user.user.infrastructure.security;
 
+import com.ticketflow.user.user.application.ports.out.UserRepositoryPort;
+import com.ticketflow.user.user.domain.models.UserDomain;
 import com.ticketflow.user.user.domain.models.enums.UserRole;
 import com.ticketflow.user.user.infrastructure.adapter.out.security.AuthenticatedUser;
 import com.ticketflow.user.user.infrastructure.adapter.out.security.JwtTokenProvider;
@@ -30,6 +32,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     public static final String REQUEST_ATTRIBUTE_USER_ROLE = "USER_ROLE";
 
     private final JwtTokenProvider jwtTokenProvider;
+    private final UserRepositoryPort userRepository;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -42,10 +45,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             try {
                 Claims claims = jwtTokenProvider.parse(token);
                 UUID userId = UUID.fromString(claims.getSubject());
-                UserRole role = UserRole.from(claims.get("role", String.class));
-                String email = claims.get("email", String.class);
 
-                AuthenticatedUser principal = new AuthenticatedUser(userId, email, role);
+                UserDomain user = userRepository.findById(userId).orElse(null);
+                if (user == null || !user.isActive()) {
+                    SecurityContextHolder.clearContext();
+                    filterChain.doFilter(request, response);
+                    return;
+                }
+
+                UserRole role = user.getRole();
+                AuthenticatedUser principal = new AuthenticatedUser(userId, user.getEmail(), role);
                 var authentication = new UsernamePasswordAuthenticationToken(
                         principal,
                         null,

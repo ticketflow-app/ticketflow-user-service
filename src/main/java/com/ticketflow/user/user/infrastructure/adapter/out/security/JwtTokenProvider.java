@@ -30,6 +30,7 @@ public class JwtTokenProvider implements TokenProviderPort {
     public String generateToken(UUID userId, String email, UserRole role) {
         Instant now = Instant.now();
         return Jwts.builder()
+                .id(UUID.randomUUID().toString())
                 .subject(userId.toString())
                 .claim("email", email)
                 .claim("role", role.getValue())

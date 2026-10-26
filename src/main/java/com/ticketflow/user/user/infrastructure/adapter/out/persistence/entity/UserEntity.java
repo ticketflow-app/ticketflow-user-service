@@ -1,6 +1,7 @@
 package com.ticketflow.user.user.infrastructure.adapter.out.persistence.entity;
 
 import com.ticketflow.user.user.domain.models.enums.UserRole;
+import com.ticketflow.user.user.domain.models.enums.UserStatus;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -29,12 +30,19 @@ public class UserEntity {
     @Column(nullable = false, unique = true, length = 255)
     private String email;
 
+    @Column(length = 30)
+    private String phone;
+
     @Column(nullable = false)
     private String password;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private UserRole role;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20, columnDefinition = "varchar(20) default 'ACTIVE'")
+    private UserStatus status;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

@@ -46,10 +46,22 @@ public class SecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/auth/register", "/api/auth/login", "/register", "/login",
+                        .requestMatchers("/api/auth/register", "/api/auth/login", "/api/auth/refresh",
+                                "/register", "/login",
                                 "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html",
                                 "/actuator/**").permitAll()
                         .requestMatchers(HttpMethod.OPTIONS).permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/usuarios/me").authenticated()
+                        .requestMatchers(HttpMethod.PUT, "/api/usuarios/me", "/api/usuarios/me/password")
+                        .authenticated()
+                        .requestMatchers(HttpMethod.POST, "/api/usuarios/organizador/solicitud")
+                        .hasRole("BUYER")
+                        .requestMatchers(HttpMethod.GET, "/api/usuarios/organizador/solicitudes")
+                        .hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/api/usuarios").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/api/usuarios/*").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.PATCH, "/api/usuarios/*/rol", "/api/usuarios/*/estado")
+                        .hasRole("ADMIN")
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)

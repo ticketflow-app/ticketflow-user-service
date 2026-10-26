@@ -34,7 +34,7 @@ class RegisterUserUseCaseTest {
 
     @Test
     void register_validRequest_createsUser() {
-        when(userRepository.existsByEmail("diego@ticketflow.com")).thenReturn(false);
+        when(userRepository.existsByEmailIgnoreCase("diego@ticketflow.com")).thenReturn(false);
         when(passwordEncoder.encode("Password123!")).thenReturn("$argon2id$encoded");
         when(userRepository.save(any(UserDomain.class))).thenAnswer(inv -> inv.getArgument(0));
 
@@ -48,7 +48,7 @@ class RegisterUserUseCaseTest {
 
     @Test
     void register_existingEmail_throwsEmailAlreadyExists() {
-        when(userRepository.existsByEmail("diego@ticketflow.com")).thenReturn(true);
+        when(userRepository.existsByEmailIgnoreCase("diego@ticketflow.com")).thenReturn(true);
 
         assertThatThrownBy(() -> useCase.register(
                 new RegisterRequestDTO("Diego", "diego@ticketflow.com", "Password123!", null)))
